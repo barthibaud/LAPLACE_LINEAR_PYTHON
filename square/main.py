@@ -74,33 +74,34 @@ def gauss_legendre_1D(n):
 
     return x, w
 
-def build_circle_geometry(N, radius):
+def build_geometry(N, a):
     """
     Construit un maillage de N points sur le cercle de rayon 'radius'.
     Retourne:
-      coords : tableau (N,2) contenant les coordonnées (x_j,y_j) du bord
-      normals: tableau (N,2) contenant la normale sortante en (x_j,y_j)
+      elems : tableau (N,6) contenant les coordonnées (x_1,y_1,x_2,y_2,x_m,y_m)
+      normals: tableau (N,2) contenant la normale sortante en (x_m,y_m)
       ds     : la longueur d'arc (constante) d'un segment (élément)
     """
     elems = np.zeros((N, 6))
     normals = np.zeros((N, 2))
 
-    dtheta = 2.0*np.pi/N
-    for j in range(N):
-        theta1 = dtheta*j
-        theta2 = dtheta*(j+1)
-        xj = radius * np.cos(theta1)
-        yj = radius * np.sin(theta1)
-        xjp1 = radius * np.cos(theta2)
-        yjp1 = radius * np.sin(theta2)
-        xm = 0.5*(xj + xjp1)
-        ym = 0.5*(yj + yjp1)
-        elems[j,:] = [xj, yj, xjp1, yjp1, xm, ym]
+    Na = int(N/4)
+    dN = a/Na
+
+    for j in range(Na):
+        # bord bas
+        elems[j+0*Na,:] = [dN*j, 0.0, dN*(j+1), 0.0, (dN*j+dN*(j+1))*0.5, 0.0]
+        elems[j+1*Na,:] = [1.0, dN*j, 1.0, dN*(j+1), 1.0, (dN*j+dN*(j+1))*0.5]
+        elems[j+2*Na,:] = [1.0-dN*j, 1.0, 1.0-dN*(j+1), 1.0, 1.0-(dN*j+dN*(j+1))*0.5, 1.0]
+        elems[j+3*Na,:] = [0.0, 1.0-dN*j, 0.0, 1.0-dN*(j+1), 0.0, 1.0-(dN*j+dN*(j+1))*0.5]
         # Normale sortante (pour un cercle centré à l'origine)
-        normals[j,:] = [np.cos(theta1*0.5+theta2*0.5), np.sin(theta1*0.5+theta2*0.5)]
+        normals[j+0*Na,:] = [0.0, -1.0]
+        normals[j+1*Na,:] = [1.0, 0.0]
+        normals[j+2*Na,:] = [0.0, 1.0]
+        normals[j+3*Na,:] = [-1.0, 0.0]
 
     # Longueur d’arc approximative par élément
-    ds = radius * dtheta
+    ds = dN
 
     return elems, normals, ds
 
@@ -161,6 +162,8 @@ def build_matrices_gauss(elems, normals, gauss_order=8):
                 # Point d'intégration s(t)
                 s_t = x_m + 0.5*xi*vecAB   # vecteur 2D
 
+                # Normale entrante
+
                 # Valeurs de la fonction de Green et sa dérivée normale
                 g_val = G_2D(xm1, s_t)
                 dg_val = dGdn_2D(xm1, s_t, n_seg)
@@ -172,6 +175,11 @@ def build_matrices_gauss(elems, normals, gauss_order=8):
 
             G[j,k] = sum_g * (0.5 * Lk)
             H[j,k] = sum_h * (0.5 * Lk)
+
+            if j == k:
+                G[j,k] = 0.0
+                H[j,k] = 0.0
+                continue
 
     return G, H
 
@@ -188,9 +196,9 @@ def solve_laplace_dirichlet_bem(N):
       phi_bd : la condition de Dirichlet imposée (phi_j = x_j)
     """
     # 1) Géométrie
-    rad = 1.0
+    a = 1.0
 
-    elems, normals, ds = build_circle_geometry(N, rad)
+    elems, normals, ds = build_geometry(N, a)
 
     # 2) Matrices G et H
     start = time.process_time()
@@ -238,8 +246,8 @@ def compute_interior_solution(elems, normals, ds, phi_bd, q_bd, Nx=50, Ny=50):
        phi_interior: solution reconstruite (même shape), np.nan en dehors du disque
     """
     # Maillage régulier dans le carré [-1,1] x [-1,1]
-    x_vals = np.linspace(-1.0, 1.0, Nx)
-    y_vals = np.linspace(-1.0, 1.0, Ny)
+    x_vals = np.linspace(0., 1.0, Nx)
+    y_vals = np.linspace(0., 1.0, Ny)
     X, Y = np.meshgrid(x_vals, y_vals, indexing='xy')
 
     N = elems.shape[0]
@@ -250,23 +258,22 @@ def compute_interior_solution(elems, normals, ds, phi_bd, q_bd, Nx=50, Ny=50):
             xx = X[i,j]
             yy = Y[i,j]
             # On ne calcule que si (xx,yy) est à l'intérieur du cercle unité
-            if xx*xx + yy*yy <= 1.0:
-                x_pt = np.array([xx, yy])
+            x_pt = np.array([xx, yy])
 
-                # Représentation intégrale
-                s1 = 0.0  # correspond à l'intégrale de dGdn_2D * phi_bd
-                s2 = 0.0  # correspond à l'intégrale de G_2D * q_bd
-                for k in range(N):
-                    x_k = elems[k,4:6]
-                    n_k = normals[k,:]
-                    # intégration élément constant
-                    g_val = G_2D(x_pt, x_k)
-                    dgdn_val = dGdn_2D(x_pt, x_k, n_k)
+            # Représentation intégrale
+            s1 = 0.0  # correspond à l'intégrale de dGdn_2D * phi_bd
+            s2 = 0.0  # correspond à l'intégrale de G_2D * q_bd
+            for k in range(N):
+                x_k = elems[k,4:6]
+                n_k = normals[k,:]
+                # intégration élément constant
+                g_val = G_2D(x_pt, x_k)
+                dgdn_val = dGdn_2D(x_pt, x_k, n_k)
 
-                    s1 += dgdn_val * phi_bd[k]
-                    s2 += g_val    * q_bd[k]
+                s1 += dgdn_val * phi_bd[k]
+                s2 += g_val    * q_bd[k]
 
-                phi_interior[i,j] = (s1 - s2) * ds
+            phi_interior[i,j] = (s1 - s2) * ds
 
     return X, Y, phi_interior
 
@@ -305,13 +312,15 @@ if __name__ == "__main__":
     times = []
     fig, axes = plt.subplots(4, 3, figsize=(18,24))
     i = 0
-    for N in [10, 50, 100, 500]:
+    Ns = [10,50,100,200]
+    for N in Ns:
+        N4 = N*4
         start = time.process_time()
-        q_bd, elems, normals, ds, phi_bd = solve_laplace_dirichlet_bem(N)
+        q_bd, elems, normals, ds, phi_bd = solve_laplace_dirichlet_bem(N4)
         end = time.process_time()
         times.append(end - start)
-        linf, l2 = dphi_error_on_bc(q_bd, elems, N)
-        print(f"{N} elem erreur L1 sur le bord: {l2}")
+        linf, l2 = dphi_error_on_bc(q_bd, elems, N4)
+        print(f"{N4} elem erreur L1 sur le bord: {l2}")
         errs.append(l2)
 
         # calcul de l'érreur sur le bord
@@ -321,12 +330,12 @@ if __name__ == "__main__":
         start = time.process_time()
         X, Y, phi_num = compute_interior_solution(elems, normals, ds, phi_bd, q_bd, Nx, Ny)
         end = time.process_time()
-        print(f"{N} elem reconstruction time:", end - start)
+        print(f"{N4} elem reconstruction time:", end - start)
 
         # 3) Solution exacte: phi(x,y) = x
         #    On la stocke dans un tableau de même dimension, en mettant NaN en dehors
         phi_exact = np.full_like(phi_num, np.nan)
-        mask_in = (X**2 + Y**2 <= 1.0)
+        mask_in = (X**2 + Y**2 <= 2.0)
         phi_exact[mask_in] = X[mask_in]  # car phi_exact(x,y) = x
 
         # 4) Erreur
@@ -336,7 +345,7 @@ if __name__ == "__main__":
 
 
         # (a) Solution numérique
-        pcm1 = axes[i,0].pcolormesh(X, Y, phi_num, shading='auto', cmap='jet', vmin=-1, vmax=1)
+        pcm1 = axes[i,0].pcolormesh(X, Y, phi_num, shading='auto', cmap='jet', vmin=0, vmax=1)
         #pcm1 = axes[0].pcolormesh(X, Y, phi_num, shading='auto', cmap='jet')
         axes[i,0].set_title("Solution numérique (BEM)")
         axes[i,0].set_aspect('equal')
@@ -360,14 +369,14 @@ if __name__ == "__main__":
     plt.savefig(f"laplace_bem_solutions.png")
 
     fig, ax = plt.subplots(1, 2, figsize=(18,6))
-    ax[0].plot([10, 50, 100, 500], errs, label="L1 dphi_dn", marker='x')
+    ax[0].plot(Ns, errs, label="L1 dphi_dn", marker='x')
     ax[0].set_xscale('log')
     ax[0].set_yscale('log')
     ax[0].set_xlabel("N")
     ax[0].set_ylabel("Erreur L1")
     ax[0].legend()
 
-    ax[1].plot([10, 50, 100, 500], times, label="temps de calcul")
+    ax[1].plot(Ns, times, label="temps de calcul")
     ax[1].set_xscale('log')
     ax[1].set_yscale('log')
     ax[1].set_xlabel("N")

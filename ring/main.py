@@ -74,7 +74,7 @@ def gauss_legendre_1D(n):
 
     return x, w
 
-def build_circle_geometry(N, radius):
+def build_geometry(N, radius):
     """
     Construit un maillage de N points sur le cercle de rayon 'radius'.
     Retourne:
@@ -86,6 +86,8 @@ def build_circle_geometry(N, radius):
     normals = np.zeros((N, 2))
 
     dtheta = 2.0*np.pi/N
+
+    #build first circle
     for j in range(N):
         theta1 = dtheta*j
         theta2 = dtheta*(j+1)
@@ -98,6 +100,22 @@ def build_circle_geometry(N, radius):
         elems[j,:] = [xj, yj, xjp1, yjp1, xm, ym]
         # Normale sortante (pour un cercle centré à l'origine)
         normals[j,:] = [np.cos(theta1*0.5+theta2*0.5), np.sin(theta1*0.5+theta2*0.5)]
+
+    #build first circle
+    # radius2 = radius*0.5
+    # for i in range(N):
+    #     j = i + N
+    #     theta1 = dtheta*j
+    #     theta2 = dtheta*(j+1)
+    #     xj = radius2 * np.cos(theta1)
+    #     yj = radius2 * np.sin(theta1)
+    #     xjp1 = radius2 * np.cos(theta2)
+    #     yjp1 = radius2 * np.sin(theta2)
+    #     xm = 0.5*(xj + xjp1)
+    #     ym = 0.5*(yj + yjp1)
+    #     elems[j,:] = [xj, yj, xjp1, yjp1, xm, ym]
+    #     # Normale entrante
+    #     normals[j,:] = [-np.cos(theta1*0.5+theta2*0.5), -np.sin(theta1*0.5+theta2*0.5)]
 
     # Longueur d’arc approximative par élément
     ds = radius * dtheta
@@ -190,16 +208,18 @@ def solve_laplace_dirichlet_bem(N):
     # 1) Géométrie
     rad = 1.0
 
-    elems, normals, ds = build_circle_geometry(N, rad)
+    elems, normals, ds = build_geometry(N, rad)
 
     # 2) Matrices G et H
     start = time.process_time()
     G, H = build_matrices_gauss(elems, normals, gauss_order=8)
     end = time.process_time()
-    print(f"{N} elem build time:", end - start)
+    print(f"{N*2} elem build time:", end - start)
 
     # 3) Condition Dirichlet: phi_j = x_j
     phi_bd = elems[:,4]  # x_j
+    #phi_bd[:] = 1.0
+    #print(f'phi_bd shape, x: {phi_bd.shape}, {phi_bd}')
 
     # 4) Assemblage du système:
     #    0.5*phi_j = sum_k( H[j,k]*phi_k ) - sum_k( G[j,k]*q_k )
@@ -212,7 +232,7 @@ def solve_laplace_dirichlet_bem(N):
 
     q = np.matmul(Ginv, RHS)
     end = time.process_time()
-    print(f"{N} elem solving time:", end - start)
+    print(f"{N*2} elem solving time:", end - start)
 
     return q, elems, normals, ds, phi_bd
 
@@ -250,7 +270,7 @@ def compute_interior_solution(elems, normals, ds, phi_bd, q_bd, Nx=50, Ny=50):
             xx = X[i,j]
             yy = Y[i,j]
             # On ne calcule que si (xx,yy) est à l'intérieur du cercle unité
-            if xx*xx + yy*yy <= 1.0:
+            if (xx*xx + yy*yy <= 1.0 and xx*xx + yy*yy >= 0.25):
                 x_pt = np.array([xx, yy])
 
                 # Représentation intégrale
@@ -270,7 +290,7 @@ def compute_interior_solution(elems, normals, ds, phi_bd, q_bd, Nx=50, Ny=50):
 
     return X, Y, phi_interior
 
-def dphi_error_on_bc(q, elems, N):
+def dphi_error_on_bc(q, elems):
     """
     Calcul de l'erreur de la dérivée normale sur le bord.
     q : dérivée normale numérique (solution BEM)
@@ -279,19 +299,19 @@ def dphi_error_on_bc(q, elems, N):
     """
     linf = 0.0
     l2 = 0.0
-    for j in range(N):
+    for j in range(elems.shape[0]):
         x_j = elems[j,0:2]
         x_jp1 = elems[j,2:4]
         vecAB = (x_jp1 - x_j)
         lj = np.linalg.norm(vecAB)
         n_x_m = [-vecAB[1]/lj, vecAB[0]/lj]  # normale au segment dirigée vers l'intérieur
         q_num = q[j]
-        dphi_exact = [1.0,0.0]
+        dphi_exact = [0.0,0.0]
         q_exact = (dphi_exact[0]*n_x_m[0]+dphi_exact[1]*n_x_m[1])
         linf = np.max([linf,(q_num - q_exact)])
         l2 += (q_num - q_exact)**2
 
-    return linf,np.sqrt(l2)/np.linalg.norm(dphi_exact)/N
+    return linf,np.sqrt(l2)/N
 
 
 ##############################################################################
@@ -305,12 +325,14 @@ if __name__ == "__main__":
     times = []
     fig, axes = plt.subplots(4, 3, figsize=(18,24))
     i = 0
-    for N in [10, 50, 100, 500]:
+    Nelem = [10, 50, 100, 500]
+    for N in Nelem:
+        N2 = N*2
         start = time.process_time()
         q_bd, elems, normals, ds, phi_bd = solve_laplace_dirichlet_bem(N)
         end = time.process_time()
         times.append(end - start)
-        linf, l2 = dphi_error_on_bc(q_bd, elems, N)
+        linf, l2 = dphi_error_on_bc(q_bd, elems)
         print(f"{N} elem erreur L1 sur le bord: {l2}")
         errs.append(l2)
 
@@ -326,8 +348,10 @@ if __name__ == "__main__":
         # 3) Solution exacte: phi(x,y) = x
         #    On la stocke dans un tableau de même dimension, en mettant NaN en dehors
         phi_exact = np.full_like(phi_num, np.nan)
-        mask_in = (X**2 + Y**2 <= 1.0)
-        phi_exact[mask_in] = X[mask_in]  # car phi_exact(x,y) = x
+        mask_1 = (X**2 + Y**2 <= 1.0) 
+        mask_2 = (X**2 + Y**2 >= 0.25)
+        phi_exact[mask_1] = X[mask_1] # car phi_exact(x,y) = x
+        phi_exact[~mask_2] = np.nan
 
         # 4) Erreur
         error_map = np.abs(phi_num - phi_exact)/np.abs(phi_exact)
