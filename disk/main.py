@@ -316,8 +316,6 @@ def dphi_error_on_bc(q, coords, N):
 
 if __name__ == "__main__":
     # 1) On résout le problème BEM sur le disque
-    a = 20
-    N = int(4*a)
     N = 400
     q_bd, coords, normals, ds, phi_bd = solve_laplace_dirichlet_bem(N)
     linf, l2 = dphi_error_on_bc(q_bd, coords, N)
