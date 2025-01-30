@@ -29,7 +29,7 @@ def dGdn_2D(x, y, ny):
     """
     r_vec = x - y
     r = np.linalg.norm(r_vec)
-    dot = np.dot(r_vec,ny)
+    dot = r_vec.dot(ny)
     return -1.0/(2.0*np.pi) * (dot / (r**2 + 1e-30))
 
 def gauss_legendre_1D(n):
@@ -82,9 +82,10 @@ def build_geometry(N, radius):
       normals: tableau (N,2) contenant la normale sortante en (x_j,y_j)
       ds     : la longueur d'arc (constante) d'un segment (élément)
     """
-    elems = np.zeros((N, 6))
-    normals = np.zeros((N, 2))
-    vecs = np.zeros((N, 2))
+    
+    offset = 0.4
+    elems = np.zeros((N*2, 6))
+    normals = np.zeros((N*2, 2))
 
     dtheta = 2.0*np.pi/N
 
@@ -101,30 +102,28 @@ def build_geometry(N, radius):
         elems[j,:] = [xj, yj, xjp1, yjp1, xm, ym]
         # Normale sortante (pour un cercle centré à l'origine)
         normals[j,:] = [np.cos(theta1*0.5+theta2*0.5), np.sin(theta1*0.5+theta2*0.5)]
-        vecs[j,:] = [xjp1 - xj, yjp1 - yj]
 
     #build inner circle
-    # radius2 = radius*0.2
-    # for i in range(N):
-    #     j = i + N
-    #     theta1 = dtheta*i
-    #     theta2 = dtheta*(i+1)
-    #     xjp1 = radius2 * np.cos(theta1)
-    #     yjp1 = radius2 * np.sin(theta1)
-    #     xj = radius2 * np.cos(theta2)
-    #     yj = radius2 * np.sin(theta2)
-    #     xm = 0.5*(xj + xjp1)
-    #     ym = 0.5*(yj + yjp1)
-    #     elems[j,:] = [xj, yj, xjp1, yjp1, xm, ym]
-    #     # Normale entrante
-    #     normals[j,:] = [-np.cos(theta1*0.5+theta2*0.5), -np.sin(theta1*0.5+theta2*0.5)]
-    #     vecs[j,:] = [xjp1 - xj, yjp1 - yj]
+    radius2 = radius*0.2
+    for i in range(N):
+        j = i + N
+        theta1 = dtheta*j
+        theta2 = dtheta*(j+1)
+        xj = radius2 * np.cos(theta1) + offset
+        yj = radius2 * np.sin(theta1)
+        xjp1 = radius2 * np.cos(theta2) + offset
+        yjp1 = radius2 * np.sin(theta2)
+        xm = 0.5*(xj + xjp1)
+        ym = 0.5*(yj + yjp1)
+        elems[j,:] = [xj, yj, xjp1, yjp1, xm, ym]
+        # Normale entrante
+        normals[j,:] = [-np.cos(theta1*0.5+theta2*0.5), -np.sin(theta1*0.5+theta2*0.5)]
 
     # Longueur d’arc approximative par élément
 
-    return elems, normals, vecs
+    return elems, normals
 
-def build_matrices_gauss(elems, normals, vecs, gauss_order=8):
+def build_matrices_gauss(elems, normals, gauss_order=8):
     """
     Construit les matrices G et H pour la formulation BEM, en utilisant
     une quadrature de Gauss-Legendre sur chaque segment du maillage.
@@ -153,10 +152,12 @@ def build_matrices_gauss(elems, normals, vecs, gauss_order=8):
     for k in range(N):
         # Segment reliant coords[k] à coords[k+1 (mod N)]
         #kp1 = (k+1) % N
+        xA = elems[k,0:2]
+        xB = elems[k,2:4]
         xm1 = elems[k,4:6]  # milieu du segment
 
         # Longueur du segment
-        vecAB = vecs[k,:]
+        vecAB = (xB - xA)
         Lk = np.linalg.norm(vecAB)
 
         # Pour chaque collocation j (chaque ligne)
@@ -164,10 +165,10 @@ def build_matrices_gauss(elems, normals, vecs, gauss_order=8):
             x_m = elems[j,4:6]  # milieu du segment
             n_seg = normals[j,:]
 
-            # if j == k:
-            #     G[j,k] = 0.0
-            #     H[j,k] = 0.0
-            #     continue
+            if j == k:
+                G[j,k] = 0.0
+                H[j,k] = 0.0
+                continue
             # Sinon on fait la quadrature sur le segment
             sum_g = 0.0
             sum_h = 0.0
@@ -208,17 +209,17 @@ def solve_laplace_dirichlet_bem(N):
     # 1) Géométrie
     rad = 1.0
 
-    elems, normals, vecs = build_geometry(N, rad)
+    elems, normals = build_geometry(N, rad)
 
     # 2) Matrices G et H
     start = time.process_time()
-    G, H = build_matrices_gauss(elems, normals, vecs, gauss_order=8)
+    G, H = build_matrices_gauss(elems, normals, gauss_order=8)
     end = time.process_time()
     print(f"{N*2} elem build time:", end - start)
 
     # 3) Condition Dirichlet: phi_j = x_j
     phi_bd = np.zeros(elems.shape[0])
-    phi_bd[:] = elems[:,4]
+    phi_bd[:] = elems[:,4]**2 - elems[:,5]**2
     #print(f'phi_bd shape, x: {phi_bd.shape}, {phi_bd}')
 
     # 4) Assemblage du système:
@@ -270,26 +271,26 @@ def compute_interior_solution(elems, normals, phi_bd, q_bd, Nx=50, Ny=50):
             xx = X[i,j]
             yy = Y[i,j]
             # On ne calcule que si (xx,yy) est à l'intérieur du cercle unité
-            if xx*xx + yy*yy <= 1.0 and xx*xx + yy*yy >= 0.04:
+            if (xx*xx + yy*yy <= 1.0 and xx*xx + yy*yy >= 0.04):
                 x_pt = np.array([xx, yy])
 
                 # Représentation intégrale
                 s1 = 0.0  # correspond à l'intégrale de dGdn_2D * phi_bd
                 s2 = 0.0  # correspond à l'intégrale de G_2D * q_bd
                 for k in range(N):
-                    x1 = elems[k,0:2]
-                    x2 = elems[k,2:4]
+                    x_1 = elems[k,0:2]
+                    x_2 = elems[k,2:4]
                     x_k = elems[k,4:6]
                     n_k = normals[k,:]
-                    ds = np.linalg.norm(x2 - x1)
+                    ds = np.linalg.norm(x_2 - x_1)
                     # intégration élément constant
                     g_val = G_2D(x_pt, x_k)
                     dgdn_val = dGdn_2D(x_pt, x_k, n_k)
 
-                    s1 += dgdn_val * phi_bd[k]
-                    s2 += g_val    * q_bd[k]
+                    s1 += dgdn_val * phi_bd[k]*ds
+                    s2 += g_val    * q_bd[k]*ds
 
-                phi_interior[i,j] = (s1 - s2) * ds
+                phi_interior[i,j] = (s1 - s2)
 
     return X, Y, phi_interior
 
@@ -305,15 +306,15 @@ def dphi_error_on_bc(q, elems):
     for j in range(elems.shape[0]):
         x_j = elems[j,0:2]
         x_jp1 = elems[j,2:4]
+        x_m = elems[j,4:6]
         vecAB = (x_jp1 - x_j)
         lj = np.linalg.norm(vecAB)
         n_x_m = [-vecAB[1]/lj, vecAB[0]/lj]  # normale au segment dirigée vers l'intérieur
         q_num = q[j]
-        dphi_exact = [1.0,0.0]
+        dphi_exact = [2.0*x_m[0],-2.0*x_m[1]]
         q_exact = (dphi_exact[0]*n_x_m[0]+dphi_exact[1]*n_x_m[1])
         linf = np.max([linf,(q_num - q_exact)])
         l2 += np.abs(q_num - q_exact)*lj
-        print(f"q_num: {q_num}, q_exact: {q_exact}")
 
     return linf,l2/(2*np.pi+2*np.pi*0.2)
 
@@ -327,7 +328,7 @@ if __name__ == "__main__":
 
     errs = []
     times = []
-    Nelem = [10, 50, 100, 200]
+    Nelem = [10, 50, 100, 500]
     fig, axes = plt.subplots(len(Nelem), 3, figsize=(18,24))
     i = 0
     for N in Nelem:
@@ -354,7 +355,7 @@ if __name__ == "__main__":
         phi_exact = np.full_like(phi_num, np.nan)
         mask_1 = (X**2 + Y**2 <= 1.0) 
         mask_2 = (X**2 + Y**2 >= 0.04)
-        phi_exact[mask_1] = X[mask_1]
+        phi_exact[mask_1] = X[mask_1]**2 - Y[mask_1]**2
         phi_exact[~mask_2] = np.nan
 
         # 4) Erreur

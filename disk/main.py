@@ -29,7 +29,7 @@ def dGdn_2D(x, y, ny):
     """
     r_vec = x - y
     r = np.linalg.norm(r_vec)
-    dot = r_vec.dot(ny)
+    dot = np.dot(r_vec,ny)
     return -1.0/(2.0*np.pi) * (dot / (r**2 + 1e-30))
 
 def gauss_legendre_1D(n):
@@ -289,9 +289,11 @@ def dphi_error_on_bc(q, elems, N):
         dphi_exact = [1.0,0.0]
         q_exact = (dphi_exact[0]*n_x_m[0]+dphi_exact[1]*n_x_m[1])
         linf = np.max([linf,(q_num - q_exact)])
-        l2 += (q_num - q_exact)**2
+        l2 += np.abs(q_num - q_exact)*lj
+        print(f"q_num: {q_num}, q_exact: {q_exact}")
 
-    return linf,np.sqrt(l2)/np.linalg.norm(dphi_exact)/N
+
+    return linf,l2/(2*np.pi+2*np.pi*0.2)
 
 
 ##############################################################################
