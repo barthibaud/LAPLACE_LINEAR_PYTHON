@@ -303,11 +303,10 @@ def dphi_error_on_bc(q, coords, N):
         q_num = q[j]
         dphi_exact = [1.0,0.0]
         q_exact = (dphi_exact[0]*n_x_m[0]+dphi_exact[1]*n_x_m[1])
-        print(f"q_num = {q_num}, q_exact = {q_exact}")
         linf = np.max([linf,(q_num - q_exact)])
         l2 += (q_num - q_exact)
         
-    return linf,l2/N
+    return linf,l2/N/np.linalg.norm(dphi_exact)*100
     
 
 ##############################################################################
@@ -319,7 +318,7 @@ if __name__ == "__main__":
     N = 400
     q_bd, coords, normals, ds, phi_bd = solve_laplace_dirichlet_bem(N)
     linf, l2 = dphi_error_on_bc(q_bd, coords, N)
-    print(f"Erreur Linf et L^2 sur le bord: {linf}, {l2}")
+    print(f"Erreur Linf et relative sur le bord: {linf}, {l2}")
     
     # calcul de l'érreur sur le bord
     
