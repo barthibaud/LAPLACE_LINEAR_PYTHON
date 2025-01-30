@@ -82,24 +82,29 @@ def build_circle_geometry(N, radius):
       normals: tableau (N,2) contenant la normale sortante en (x_j,y_j)
       ds     : la longueur d'arc (constante) d'un segment (élément)
     """
-    coords = np.zeros((N, 2))
+    elems = np.zeros((N, 6))
     normals = np.zeros((N, 2))
 
     dtheta = 2.0*np.pi/N
     for j in range(N):
-        theta = dtheta*j+0.5*dtheta
-        xj = radius * np.cos(theta)
-        yj = radius * np.sin(theta)
-        coords[j,:] = [xj, yj]
+        theta1 = dtheta*j
+        theta2 = dtheta*(j+1)
+        xj = radius * np.cos(theta1)
+        yj = radius * np.sin(theta1)
+        xjp1 = radius * np.cos(theta2)
+        yjp1 = radius * np.sin(theta2)
+        xm = 0.5*(xj + xjp1)
+        ym = 0.5*(yj + yjp1)
+        elems[j,:] = [xj, yj, xjp1, yjp1, xm, ym]
         # Normale sortante (pour un cercle centré à l'origine)
-        normals[j,:] = [np.cos(theta), np.sin(theta)]
+        normals[j,:] = [np.cos(theta1*0.5+theta2*0.5), np.sin(theta1*0.5+theta2*0.5)]
 
     # Longueur d’arc approximative par élément
     ds = radius * dtheta
 
-    return coords, normals, ds
+    return elems, normals, ds
 
-def build_matrices_gauss(coords, normals, gauss_order=8):
+def build_matrices_gauss(elems, normals, gauss_order=8):
     """
     Construit les matrices G et H pour la formulation BEM, en utilisant
     une quadrature de Gauss-Legendre sur chaque segment du maillage.
@@ -116,20 +121,21 @@ def build_matrices_gauss(coords, normals, gauss_order=8):
                On calcule la normale s(t)/||s(t)|| pour un cercle
                (ou un interpolé plus précis si la géométrie n'est pas un cercle).
     """
-    from math import sqrt
 
-    N = coords.shape[0]
+    N = elems.shape[0]
     G = np.zeros((N, N))
     H = np.zeros((N, N))
 
     # Récupération des points et poids Gauss-Legendre sur [-1,1]
     xi_gauss, w_gauss = gauss_legendre_1D(gauss_order)
+    print_debug = True
 
     for k in range(N):
         # Segment reliant coords[k] à coords[k+1 (mod N)]
-        kp1 = (k+1) % N
-        xA = coords[k]
-        xB = coords[kp1]
+        #kp1 = (k+1) % N
+        xA = elems[k,0:2]
+        xB = elems[k,2:4]
+        xm1 = elems[k,4:6]  # milieu du segment
 
         # Longueur du segment
         vecAB = (xB - xA)
@@ -137,23 +143,12 @@ def build_matrices_gauss(coords, normals, gauss_order=8):
 
         # Pour chaque collocation j (chaque ligne)
         for j in range(N):
-            x_j = coords[j]
-            x_jp1 = coords[(j+1) % N]
-            x_m = 0.5*(x_j + x_jp1)  # milieu du segment
+            x_m = elems[j,4:6]  # milieu du segment
 
-            # --- G_{j,k} et H_{j,k} ---
-            # Intégration de G_2D(x_j, s(t)) ou dGdn_2D(x_j, s(t)) sur t in [0,1]
-
-            # Cas diagonal: on force H_{j,j} = 0 => plus tard on ajoutera +0.5*phi_j dans le système.
             if j == k:
-                # S'il s'agit du même index (strictement) => on met 0.
-                # (NB: il y aurait la question de "j est dans le segment k?" 
-                #  Dans un BEM plus fin, on regarde la near-singularity quand x_j est "dans" le segment k.
-                #  Pour la démo, on fait simple.)
                 G[j,k] = 0.0
                 H[j,k] = 0.0
                 continue
-
             # Sinon on fait la quadrature sur le segment
             sum_g = 0.0
             sum_h = 0.0
@@ -162,25 +157,13 @@ def build_matrices_gauss(coords, normals, gauss_order=8):
                 xi = xi_gauss[ig]   # point de référence dans [-1,1]
                 w  = w_gauss[ig]    # poids associé
 
-                # Transformation : t in [0,1], t = (xi+1)/2
-                t = 0.5*(xi + 1.0)
-
                 # Point d'intégration s(t)
-                s_t = xA + t*vecAB   # vecteur 2D
-                # Normale sortante. Pour un cercle centré à l'origine,
-                # on peut prendre n(t) = s_t / ||s_t||. 
-                # (Pour une géométrie plus générale, on interpolerait la normale.)
+                s_t = xm1 + 0.5*xi*vecAB   # vecteur 2D
+
+                # Normale entrante
                 n_seg = [-vecAB[1], vecAB[0]]  # normal au segment
-                r_s = np.linalg.norm(s_t)
-                if r_s < 1e-14:
-                    # Evite la division par zéro
-                    n_t = normals[k]  # fallback
-                else:
-                    n_t = s_t / r_s
 
                 # Valeurs de la fonction de Green et sa dérivée normale
-                # g_val = G_2D(x_j, s_t)
-                # dg_val = dGdn_2D(x_j, s_t, -n_t)
                 g_val = G_2D(x_m, s_t)
                 dg_val = dGdn_2D(x_m, s_t, n_seg)
 
@@ -188,12 +171,7 @@ def build_matrices_gauss(coords, normals, gauss_order=8):
                 sum_g += g_val * w
                 sum_h += dg_val * w
 
-            # Facteur du changement de variable:
-            #  - On est passé de t in [0,1] => xi in [-1,1], Jacobien = (Lk * 0.5).
-            #  - En paramètre direct on a s(t) = xA + t*(xB - xA), dΓ = Lk dt.
-            #  - Avec la transfo Gauss, dt = (xi+1)/2 => J = 0.5. 
-            # => Au total, dΓ = Lk dt => Lk * (0.5) quand on multiplie par w.
-            # => sum = sum * (Lk/2).
+
             G[j,k] = sum_g * (0.5 * Lk)
             H[j,k] = sum_h * (0.5 * Lk)
 
@@ -214,16 +192,16 @@ def solve_laplace_dirichlet_bem(N):
     # 1) Géométrie
     rad = 1.0
 
-    coords, normals, ds = build_circle_geometry(N, rad)
+    elems, normals, ds = build_circle_geometry(N, rad)
 
     # 2) Matrices G et H
     start = time.process_time()
-    G, H = build_matrices_gauss(coords, normals, gauss_order=8)
+    G, H = build_matrices_gauss(elems, normals, gauss_order=8)
     end = time.process_time()
     print(f"{N} elem build time:", end - start)
 
     # 3) Condition Dirichlet: phi_j = x_j
-    phi_bd = coords[:,0]  # x_j
+    phi_bd = elems[:,4]  # x_j
 
     # 4) Assemblage du système:
     #    0.5*phi_j = sum_k( H[j,k]*phi_k ) - sum_k( G[j,k]*q_k )
@@ -238,13 +216,13 @@ def solve_laplace_dirichlet_bem(N):
     end = time.process_time()
     print(f"{N} elem solving time:", end - start)
 
-    return q, coords, normals, ds, phi_bd
+    return q, elems, normals, ds, phi_bd
 
 ##############################################################################
 #       Nouvelle fonction : reconstruction de la solution à l'intérieur
 ##############################################################################
 
-def compute_interior_solution(coords, normals, ds, phi_bd, q_bd, Nx=50, Ny=50):
+def compute_interior_solution(elems, normals, ds, phi_bd, q_bd, Nx=50, Ny=50):
     """
     Calcule la solution phi(x,y) à l'intérieur du disque en un maillage (Nx x Ny).
     On effectue la représentation intégrale :
@@ -266,7 +244,7 @@ def compute_interior_solution(coords, normals, ds, phi_bd, q_bd, Nx=50, Ny=50):
     y_vals = np.linspace(-1.0, 1.0, Ny)
     X, Y = np.meshgrid(x_vals, y_vals, indexing='xy')
 
-    N = coords.shape[0]
+    N = elems.shape[0]
     phi_interior = np.full_like(X, np.nan, dtype=float)  # on met NaN par défaut
 
     for i in range(Nx):
@@ -281,7 +259,7 @@ def compute_interior_solution(coords, normals, ds, phi_bd, q_bd, Nx=50, Ny=50):
                 s1 = 0.0  # correspond à l'intégrale de dGdn_2D * phi_bd
                 s2 = 0.0  # correspond à l'intégrale de G_2D * q_bd
                 for k in range(N):
-                    x_k = coords[k,:]
+                    x_k = elems[k,4:6]
                     n_k = normals[k,:]
                     # intégration élément constant
                     g_val = G_2D(x_pt, x_k)
@@ -294,7 +272,7 @@ def compute_interior_solution(coords, normals, ds, phi_bd, q_bd, Nx=50, Ny=50):
 
     return X, Y, phi_interior
 
-def dphi_error_on_bc(q, coords, N):
+def dphi_error_on_bc(q, elems, N):
     """
     Calcul de l'erreur de la dérivée normale sur le bord.
     q : dérivée normale numérique (solution BEM)
@@ -304,9 +282,8 @@ def dphi_error_on_bc(q, coords, N):
     linf = 0.0
     l2 = 0.0
     for j in range(N):
-        x_j = coords[j,:]
-        x_jp1 = coords[(j+1) % N,:]
-        x_m = 0.5*(x_j + x_jp1)
+        x_j = elems[j,0:2]
+        x_jp1 = elems[j,2:4]
         vecAB = (x_jp1 - x_j)
         lj = np.linalg.norm(vecAB)
         n_x_m = [-vecAB[1]/lj, vecAB[0]/lj]  # normale au segment dirigée vers l'intérieur
@@ -332,10 +309,10 @@ if __name__ == "__main__":
     i = 0
     for N in [10, 50, 100, 500]:
         start = time.process_time()
-        q_bd, coords, normals, ds, phi_bd = solve_laplace_dirichlet_bem(N)
+        q_bd, elems, normals, ds, phi_bd = solve_laplace_dirichlet_bem(N)
         end = time.process_time()
         times.append(end - start)
-        linf, l2 = dphi_error_on_bc(q_bd, coords, N)
+        linf, l2 = dphi_error_on_bc(q_bd, elems, N)
         print(f"{N} elem erreur L1 sur le bord: {l2}")
         errs.append(l2)
 
@@ -344,7 +321,7 @@ if __name__ == "__main__":
         # 2) On reconstruit la solution à l'intérieur
         Nx, Ny = 100, 100  # taille du maillage pour la visualisation
         start = time.process_time()
-        X, Y, phi_num = compute_interior_solution(coords, normals, ds, phi_bd, q_bd, Nx, Ny)
+        X, Y, phi_num = compute_interior_solution(elems, normals, ds, phi_bd, q_bd, Nx, Ny)
         end = time.process_time()
         print(f"{N} elem reconstruction time:", end - start)
 
